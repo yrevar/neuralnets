@@ -135,23 +135,36 @@ class CaptioningRNN(object):
     # defined above to store loss and gradients; grads[k] should give the      #
     # gradients for self.params[k].                                            #
     ############################################################################
+    
+    # forward pass
     h0 = np.dot(features, W_proj) + b_proj 
     captions_wordvec, word_embedding_cache = word_embedding_forward(captions_in, W_embed)
 
-    next_h, rnn_cache = rnn_forward(captions_wordvec, h0, Wx, Wh, b)
+    if self.cell_type == "lstm":
+        next_h, rnn_cache = lstm_forward(captions_wordvec, h0, Wx, Wh, b)
+    else:
+        next_h, rnn_cache = rnn_forward(captions_wordvec, h0, Wx, Wh, b)
+        
     captions_pred, out_cache = temporal_affine_forward(next_h, W_vocab, b_vocab)
     
     if scores_only:
         return captions_pred
+    
+    # backprop
     loss, dout = temporal_softmax_loss(captions_pred, captions_out, mask)
     
     dnext_h, grads['W_vocab'], grads['b_vocab'] = temporal_affine_backward(dout, out_cache)
-    dcaptions_wordvec, dh0, grads['Wx'], grads['Wh'], grads['b'] = rnn_backward(dnext_h, rnn_cache)
-    #grads['b'] = np.sum(grads['b'], axis=0)
+    
+    if self.cell_type == "lstm":
+        dcaptions_wordvec, dh0, \
+                grads['Wx'], grads['Wh'], grads['b'] = lstm_backward(dnext_h, rnn_cache)
+    else:
+        dcaptions_wordvec, dh0, \
+                grads['Wx'], grads['Wh'], grads['b'] = rnn_backward(dnext_h, rnn_cache)
+            
     grads['W_embed'] = word_embedding_backward(dcaptions_wordvec, word_embedding_cache)
     grads['b_proj'] = np.sum(dh0, axis=0)
     grads['W_proj'] = np.dot(features.T, dh0)
-    #grads['features'] = np.dot(features.T, grads['h0'])
     ############################################################################
     #                             END OF YOUR CODE                             #
     ############################################################################
@@ -216,6 +229,7 @@ class CaptioningRNN(object):
     h0 = np.dot(features, W_proj) + b_proj
     captions_init = self._start * np.ones((N, 1), dtype=np.int32)
     next_h = h0
+    prev_cell = np.zeros_like(h0)
     for t in xrange(max_length):
 
         if t == 0:
@@ -223,7 +237,11 @@ class CaptioningRNN(object):
         else:
             #need to preserve dimension of captions when slicing, so we'll use captions[:, [t-1]] instead captions[:, t-1]
             word_emb, word_embedding_cache = word_embedding_forward(captions[:, [t-1]], W_embed) 
-        next_h, _ = rnn_step_forward(word_emb[:,0,:], next_h, Wx, Wh, b)
+            
+        if self.cell_type == "lstm":
+            next_h, prev_cell, _ = lstm_step_forward(word_emb.squeeze(), next_h, prev_cell, Wx, Wh, b)
+        else:
+            next_h, _ = rnn_step_forward(word_emb.squeeze(), next_h, Wx, Wh, b)
         
         captions_pred, _ = temporal_affine_forward(next_h[np.newaxis].transpose(1,0,2), W_vocab, b_vocab)
         captions[:, t] = np.argmax(captions_pred, axis=2).squeeze()
