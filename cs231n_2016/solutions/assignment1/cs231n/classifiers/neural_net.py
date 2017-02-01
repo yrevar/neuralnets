@@ -1,6 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import math
 
+def relu(x):
+#     x[x<=0]=0
+    return np.clip(x,0,float('Inf'))
 
 class TwoLayerNet(object):
   """
@@ -39,7 +43,7 @@ class TwoLayerNet(object):
     self.params['W2'] = std * np.random.randn(hidden_size, output_size)
     self.params['b2'] = np.zeros(output_size)
 
-  def loss(self, X, y=None, reg=0.0):
+  def loss(self, X, y=None, reg=0.0, do_dropout=False, dropout_percent=0):
     """
     Compute the loss and gradients for a two layer fully connected neural
     network.
@@ -74,7 +78,18 @@ class TwoLayerNet(object):
     # Store the result in the scores variable, which should be an array of      #
     # shape (N, C).                                                             #
     #############################################################################
-    pass
+    
+    # Layer 1 
+    layer1 = X.dot(W1) + b1
+    layer1_relu = relu(layer1)
+    if y is not None and dropout_percent:
+        #layer1_relu *= np.random.binomial([np.ones_like(layer1_relu)],1-dropout_percent)[0] * (1.0/(1-dropout_percent))
+        dropout_mask = (np.random.rand(*layer1_relu.shape) < (1-dropout_percent))/(1-dropout_percent)
+        layer1_relu = dropout_mask*layer1_relu
+        
+    # Layer 2
+    layer2 = layer1_relu.dot(W2) + b2
+    scores = layer2
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
@@ -83,8 +98,15 @@ class TwoLayerNet(object):
     if y is None:
       return scores
 
-    # Compute the loss
-    loss = None
+    # Class probabilities
+    f_scores = scores
+    f_scores -= np.max(f_scores, axis=1, keepdims=True) # for numerical stability
+    f_prob = np.exp(f_scores)/np.sum(np.exp(f_scores), axis=1, keepdims=True)
+    
+    # Cross entropy loss 
+    correct_log_probs = np.log(f_prob[range(N),y])
+    data_loss = -np.sum(correct_log_probs)/N
+    
     #############################################################################
     # TODO: Finish the forward pass, and compute the loss. This should include  #
     # both the data loss and L2 regularization for W1 and W2. Store the result  #
@@ -92,7 +114,11 @@ class TwoLayerNet(object):
     # classifier loss. So that your results match ours, multiply the            #
     # regularization loss by 0.5                                                #
     #############################################################################
-    pass
+    # Regularization loss
+    reg_loss = 0.5*reg*(np.sum(W1*W1) + np.sum(W2*W2))
+    
+    # Total loss
+    loss = data_loss + reg_loss
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
@@ -103,8 +129,38 @@ class TwoLayerNet(object):
     # TODO: Compute the backward pass, computing the derivatives of the weights #
     # and biases. Store the results in the grads dictionary. For example,       #
     # grads['W1'] should store the gradient on W1, and be a matrix of same size #
-    #############################################################################
-    pass
+    ###########################################################################
+    # Softmax gradient 
+    # Ref: http://nbviewer.jupyter.org/github/yrevar/machine_learning_blog/blob/draft/softmax_gradient_derivation/softmax_gradient_derivation.ipynb
+    dscores = f_prob
+    dscores[range(N),y] -= 1
+    dscores /= N
+    
+    # Backprop into last layer
+    # W2 * layer1_relu + b2 = scores (<-dscores). So, dW2 = layer1_relu * dscores, db2 = dscores
+    grads['W2'] = np.dot(layer1_relu.T, dscores)
+    grads['b2'] = np.sum(dscores, axis=0)
+    
+    # Next, Backprop into hidden layer
+    # dlayer1_relu = W2 * dscores
+    dlayer1_relu = np.dot(dscores, W2.T)
+    
+    # Backprop through dropout 
+    if dropout_percent > 0:
+        dlayer1_relu = dropout_mask*dlayer1_relu
+    
+    # Backprop throguh ReLU non-linearity
+    dlayer1 = dlayer1_relu
+    dlayer1[layer1_relu <= 0] = 0
+    
+    # Finally, backprop into first layer W1,b1
+    # W1 * X + b1 = layer1. So, dW1 = dlayer1 * X, db1 = dlayer1
+    grads['W1'] = np.dot(X.T, dlayer1)
+    grads['b1'] = np.sum(dlayer1, axis=0)
+    
+    # Gradient of the regularization loss
+    grads['W2'] += reg*W2
+    grads['W1'] += reg*W1
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
@@ -114,7 +170,7 @@ class TwoLayerNet(object):
   def train(self, X, y, X_val, y_val,
             learning_rate=1e-3, learning_rate_decay=0.95,
             reg=1e-5, num_iters=100,
-            batch_size=200, verbose=False):
+            batch_size=200, dropout_percent=0, verbose=False):
     """
     Train this neural network using stochastic gradient descent.
 
@@ -148,13 +204,18 @@ class TwoLayerNet(object):
       # TODO: Create a random minibatch of training data and labels, storing  #
       # them in X_batch and y_batch respectively.                             #
       #########################################################################
-      pass
+      batch_indices = np.random.choice(num_train, batch_size, replace=True)
+      X_batch = X[batch_indices]
+      y_batch = y[batch_indices]
       #########################################################################
       #                             END OF YOUR CODE                          #
       #########################################################################
 
       # Compute loss and gradients using the current minibatch
-      loss, grads = self.loss(X_batch, y=y_batch, reg=reg)
+      if dropout_percent:
+        loss, grads = self.loss(X_batch, y=y_batch, reg=reg, dropout_percent=dropout_percent)
+      else:
+        loss, grads = self.loss(X_batch, y=y_batch, reg=reg, dropout_percent=0)
       loss_history.append(loss)
 
       #########################################################################
@@ -163,12 +224,15 @@ class TwoLayerNet(object):
       # using stochastic gradient descent. You'll need to use the gradients   #
       # stored in the grads dictionary defined above.                         #
       #########################################################################
-      pass
+      self.params['W1'] += -1*learning_rate*grads['W1']
+      self.params['b1'] += -1*learning_rate*grads['b1']
+      self.params['W2'] += -1*learning_rate*grads['W2']
+      self.params['b2'] += -1*learning_rate*grads['b2']
       #########################################################################
       #                             END OF YOUR CODE                          #
       #########################################################################
 
-      if verbose and it % 100 == 0:
+      if verbose and it % 300 == 0:
         print 'iteration %d / %d: loss %f' % (it, num_iters, loss)
 
       # Every epoch, check train and val accuracy and decay learning rate.
@@ -208,7 +272,7 @@ class TwoLayerNet(object):
     ###########################################################################
     # TODO: Implement this function; it should be VERY simple!                #
     ###########################################################################
-    pass
+    y_pred = np.argmax(self.loss(X), axis=1)
     ###########################################################################
     #                              END OF YOUR CODE                           #
     ###########################################################################
